@@ -1,17 +1,10 @@
 # iliad-unifi
 
+**English** · [Italiano](README.it.md) — guida completa in italiano
+
 Run an **Iliad Italia "modem libero" (net neutrality) FTTH line directly on a UniFi gateway**, with no iliadbox
 in front. It uses UniFi's own *IPv4 Over IPv6 → IPIP* WAN type (UniFi Network 11.0.81 Early Access and later)
 plus a small helper that covers the places where Iliad differs from the Japanese ISPs that feature was written for.
-
-> **In italiano, in breve.** Con UniFi Network 11.0.81 (Early Access) il gateway UniFi sa già fare il tunnel
-> IPv4-in-IPv6 di Iliad (*IPv4 Over IPv6 → IPIP → v6 Plus*), ma su Iliad non si alza da solo per tre motivi:
-> l'indirizzo locale del tunnel viene preso dal prefisso sbagliato, il tunnel parte solo dopo una chiamata a un
-> server giapponese, e con la VLAN 836 il tunnel viene agganciato alla porta invece che alla VLAN. `native.sh`
-> sistema questi tre punti e (opzionale) ripristina la WAN se qualcuno la salva dall'app UniFi per iOS, che la
-> trasforma in DHCP. Provato il 6 ottobre 2026 su una linea Iliad 5 Gbps con UCG Fiber e UDM Pro: fino a
-> **4,3 Gb/s** verso la LAN, contro i ~2,35 massimi passando dall'iliadbox (che ha una sola porta 2.5G).
-> Non è un prodotto ufficiale: usalo a tuo rischio.
 
 **Status (2026-10-07):** working on one Iliad 5 Gbps line (5000/700) with a **UniFi Cloud Gateway Fiber** and a
 **UDM Pro**, both on UniFi OS 6.0.11 and UniFi Network 11.0.81 EA. The IPIP type is marked *Labs* in an Early
@@ -78,8 +71,9 @@ its single 2.5G port, so the router sees at most about 2.35 Gb/s.
 
 ## Setup
 
-1. **Config.** `cp iliad.conf.example local/iliad.conf` and fill in the four portal values, `WAN_PORT_IF` (the
-   port facing the ONT: on a UDM Pro `eth9` = port 10, the SFP+ WAN) and `REGISTERED_MAC`. `local/` is gitignored.
+1. **Config.** `mkdir -p local && cp iliad.conf.example local/iliad.conf` and fill in the four portal values,
+   `WAN_PORT_IF` (the port facing the ONT: on a UDM Pro `eth9` = port 10, the SFP+ WAN) and `REGISTERED_MAC`.
+   `local/` is gitignored.
 2. **Copy the kit:** `./push.sh root@<gateway>` (installs it in `/data/iliad`, which survives reboots).
 3. **Preflight (changes nothing):** `ssh root@<gateway> /data/iliad/preflight.sh`. It checks that the firmware
    has the `ipip_jpix` capability, the ports and SFP modules, the current WAN, and whether the WAN port MAC matches
