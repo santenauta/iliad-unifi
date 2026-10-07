@@ -378,12 +378,29 @@ uninstall() {
 
 # --- reports -------------------------------------------------------------------------------------
 
+# Clone only when the registered MAC is not the port's own. The port's MAC is known on the gateway, not when `ui`
+# runs on a computer.
+mac_clone_hint() {
+    local own reg
+    own=$(tr A-F a-f 2>/dev/null <"/sys/class/net/$WAN_PORT_IF/address")
+    reg=$(echo "${REGISTERED_MAC:-}" | tr A-F a-f)
+    if [ -z "$reg" ]; then
+        echo "off if $WAN_PORT_IF's own MAC${own:+ ($own)} is the one registered in the Iliad portal, else the registered MAC"
+    elif [ -z "$own" ]; then
+        echo "off if $REGISTERED_MAC is $WAN_PORT_IF's own MAC, else $REGISTERED_MAC"
+    elif [ "$own" = "$reg" ]; then
+        echo "off ($WAN_PORT_IF's own MAC $own is the registered one)"
+    else
+        echo "$REGISTERED_MAC  ($WAN_PORT_IF's own MAC is $own)"
+    fi
+}
+
 ui() {
     hdr "UniFi → Settings → Internet → the Iliad WAN (Network 11.0.81 EA or later)"
     cat <<EOF
-  Port / interface   the SFP+ port with the MDONU05A DAC  (kit: WAN_PORT_IF=$WAN_PORT_IF)
+  Port / interface   the gateway port the ONT is cabled to  (kit: WAN_PORT_IF=$WAN_PORT_IF)
   VLAN ID            $VLAN
-  MAC Address Clone  ${REGISTERED_MAC:-<a MAC registered in the Iliad portal>}
+  MAC Address Clone  $(mac_clone_hint)
   IPv4 connection    IPv4 Over IPv6 → IPIP → v6 Plus
     Border Relay     $BR_C
     Interface ID     $IID        (this form: UniFi's calculator crashes on $IID4)
