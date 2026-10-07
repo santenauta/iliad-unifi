@@ -1,0 +1,4 @@
+/local
+*.log
+.DS_Store
+/.claude/

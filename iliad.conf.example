@@ -1,0 +1,37 @@
+# iliad-unifi configuration. Copy to iliad.conf next to the scripts (on the gateway: /data/iliad/iliad.conf).
+# Values come from Iliad's Area Personale → Informazioni Net Neutrality. The ones below are
+# documentation addresses (RFC 3849 / RFC 5737), not a real line.
+
+# Physical port facing the Iliad ONT. UDM Pro: eth8 = port 9 (RJ45 WAN), eth9 = port 10 (SFP+ WAN).
+# UCG Fiber: eth0 = port 1 (10G RJ45), eth5 = SFP+ 1 (port 6), eth6 = SFP+ 2 (port 7); confirm with preflight.sh.
+WAN_PORT_IF=eth9
+VLAN=836
+# The VLAN interface UniFi creates for that WAN. Defaults to ${WAN_PORT_IF}.${VLAN}; override if preflight shows otherwise.
+#WAN_IF=eth9.836
+
+IP6_NETWORK=2001:db8:1234:5670::/60                  # IP6_NETWORK (delegated prefix)
+IP6_TUNNEL_LOCAL=2001:db8:1234:5670::c000:22b:0      # IP6_TUNNEL_LOCAL
+IP6_TUNNEL_GW=2001:db8:ffff:ffff:c000:200:0:1        # IP6_TUNNEL_GW (Border Relay)
+IP4_TUNNEL=192.0.2.43                                # IP4_TUNNEL
+# MAC registered in the portal (Informazioni Net Neutrality). Iliad sees the router's WAN port MAC,
+# not the ONT's. preflight.sh compares it with WAN_PORT_IF; on a mismatch use UniFi's WAN
+# "MAC Address Clone" rather than registering another (slots are limited and were not deletable in 2024).
+#REGISTERED_MAC=aa:bb:cc:dd:ee:ff
+
+# native.sh (UniFi's own "IPIP → v6 Plus" WAN, Network 11.0.81 EA+). UniFi insists on a login of 1-20
+# alphanumerics; Iliad has none, and native.sh answers the address update on the gateway, so any will do.
+#IPIP_USER=iliad
+#IPIP_PASS=iliad46
+# Host part (hex) of the address native.sh puts on the WAN, inside the /60's first /64. Not 1 (UniFi LAN gateways).
+#NATIVE_HOST=46
+# Port of the on-box address-update responder (only reachable from the gateway itself).
+#NATIVE_RESP_PORT=4646
+# Guard: with a UniFi API key (write access) in /data/iliad/api.key — root, mode 600, never in this file — the service
+# undoes the UniFi iOS app's silent switch of the Iliad WAN to DHCP. Off: NATIVE_GUARD=off or touch /data/iliad/guard.off.
+#NATIVE_GUARD=on
+
+# Test tunnel and policy-routing table used by selftest.sh / lan.sh (must not clash with UniFi's 2xx tables).
+#TEST_TUN=iltest0
+#TEST_TABLE=4646
+# Minutes before lan.sh undoes itself unless you run `lan.sh keep`.
+#DEADMAN_MIN=10
