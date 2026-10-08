@@ -6,9 +6,9 @@ Run an **Iliad Italia "modem libero" (net neutrality) FTTH line directly on a Un
 in front. It uses UniFi's own *IPv4 Over IPv6 → IPIP* WAN type (UniFi Network 11.0.81 Early Access and later)
 plus a small helper that covers the places where Iliad differs from the Japanese ISPs that feature was written for.
 
-**Status (2026-10-07):** working on one Iliad 5 Gbps line (5000/700) with a **UniFi Cloud Gateway Fiber** and a
-**UDM Pro**, both on UniFi OS 6.0.11 and UniFi Network 11.0.81 EA. The IPIP type is marked *Labs* in an Early
-Access release and may change under you. Not tested yet on a 2.5 Gbps GPON line; reports welcome.
+**Status (2026-10-08):** working on an Iliad 5 Gbps line (5000/700) with a **UniFi Cloud Gateway Fiber** and a
+**UDM Pro**, and on a **2.5 Gbps GPON line** (2500/1000) with a UCG Fiber, all on UniFi OS 6.0.11 and UniFi Network
+11.0.81 EA. The IPIP type is marked *Labs* in an Early Access release and may change under you. Reports welcome.
 
 ## How Iliad delivers IPv4
 
@@ -38,11 +38,16 @@ health, failover. On Iliad it still does not come up on its own:
 | 2 | The tunnel is built only after an HTTP "address update" to the Japanese ISP succeeds, with a mandatory login. One failure means no retry until the WAN's IPv6 changes. | Points UniFi's per-WAN override (`/data/udapi-config/jpix.<wan>.address_update`) at a tiny responder on the gateway itself, so the dummy login never leaves the box, and nudges UniFi again if IPv4 stays down for 60 s. |
 | 3 | With a VLAN on the WAN, Network 11.0.81 binds the tunnel to the **port** (`eth9`) instead of the **VLAN interface** (`eth9.836`). The right parameters are computed but the tunnel stays at `::ffff:192.0.0.2 → any`. | Re-points the tunnel at the VLAN interface after every provision (about a 4 s gap). |
 | 4 | **Trap:** saving that WAN in the **UniFi iOS app**, which does not know the IPIP type, silently turns it into DHCP and deletes the Border Relay, interface ID and login. Iliad goes down. | Optional guard: with a UniFi API key it notices exactly that state and writes the IPIP settings back (at most 3 times an hour). |
+| 5 | *LAN IPv6:* nothing routes the unused part of the /60, so packets to it bounce between the gateway and Iliad until their hop limit runs out. | Adds an unreachable route for the /60 (the LAN /64s are more specific). |
+| 6 | *LAN IPv6:* UniFi's domain-based **Traffic Routes** (a site sent through a VPN client, say) act on IPv4 only. Their IPv6 address lists fill up but nothing uses them, so dual-stack clients reach those sites over Iliad directly: wrong country, no kill switch. | Refuses IPv6 to those sites with an immediate reset; clients fall back to IPv4, which the route carries. Off: `NATIVE_V6_ROUTES=off`. |
 
+Pieces 5 and 6 matter only once a LAN has public IPv6 from the /60, and do nothing harmful without one.
 Everything else is UniFi's own. As a service (`iliad-native`) the helper re-checks every 5 s and goes idle if the
 WAN is no longer an IPIP WAN.
 
-## Results (2026-10-06, Iliad 5 Gbps)
+## Results
+
+**5 Gbps** (XGS-PON, 2026-10-06):
 
 | | UCG Fiber | UDM Pro |
 |---|---|---|
@@ -54,6 +59,11 @@ WAN is no longer an IPIP WAN.
 Upload is the plan's 700 Mb/s either way. For comparison, an iliadbox in front of a UniFi router reaches it through
 its single 2.5G port, so the router sees at most about 2.35 Gb/s.
 
+**2.5 Gbps** (GPON, UCG Fiber, 2026-10-08): UniFi's speed test **2192 / 924** and 2003 / 952 Mb/s; plain-HTTP
+downloads on the gateway 2.10–2.19 Gb/s, native IPv6 a little faster than the tunnel. That is about all GPON
+carries: 2.488 Gb/s raw, minus its framing, the 2.5G Ethernet link to the ONT and the tunnel's 40-byte header.
+Until a QoS rule was switched off the same line read ~1.6 Gb/s day and night (see *Tuning*).
+
 ## Requirements
 
 - **Gateway:** UniFi OS 6.0.11 or later with **UniFi Network 11.0.81 or later** (Early Access at the time of
@@ -62,8 +72,8 @@ its single 2.5G port, so the router sees at most about 2.35 Gb/s.
   (`ssh-copy-id root@<gateway>`).
 - **The ONT.** On the 5 Gbps offer this is Iliad's external ONT box, **Freebox F-MDONU05A**: the fibre goes into its
   FIBER cage, and a **10G SFP+ DAC** goes from its BOX cage to the gateway's SFP+ WAN port. A 20 cm 10G DAC linked at
-  10G and carried over 4 Gb/s. On 2.5 Gbps GPON lines with an external ONT on RJ45 the same setup should apply, but it
-  has not been tested here yet.
+  10G and carried over 4 Gb/s. On the 2.5 Gbps GPON offer the ONT is a **ZTE ZXHN F6005** with a 2.5G RJ45 port:
+  cable it to a 2.5G (or faster) RJ45 port on the gateway. Tested on a UCG Fiber's port 1.
 - **MAC address.** Iliad sees the **router's WAN port MAC** (the ONT is a layer-2 bridge). Use a MAC already
   registered in the portal, either because it is the port's own MAC or through UniFi's *MAC Address Clone*. The
   portal has only a few slots, which could not be deleted (2024), and a new registration can take up to 48 h.
@@ -92,13 +102,23 @@ its single 2.5G port, so the router sees at most about 2.35 Gb/s.
    `native.sh status` should show UniFi's tunnel with local = `IP6_TUNNEL_LOCAL`, the public IPv4 on it and pings
    answered. The WAN turns green in the UI.
 7. **Verify:** from a LAN machine, `curl -4 -s https://1.1.1.1/cdn-cgi/trace` shows your static IPv4. Then
-   port-scan that IPv4 from outside your network: nothing should be open. (UniFi's own firewall covers the
-   tunnel on the native path, but a clean outside scan has not been done here yet, so check yours.)
+   port-scan that IPv4 from outside your network: nothing should be open. (On a UCG Fiber an outside scan found
+   all 65,535 TCP ports filtered; check yours. A network that intercepts a port, as some mobile carriers do with
+   21 and VPNs with 53, shows it "open" for any address: try a documentation address such as `192.0.2.1` too.)
 8. **Optional guard against the iOS app:** create an API key in *UniFi OS → Control Plane → Integrations* and
    store it on the gateway with `umask 077; cat > /data/iliad/api.key` (root only, never in `iliad.conf`).
    `native.sh guard-check` (read-only) tests the key and shows what the guard would do. The key can change your
    whole network configuration, so treat it like the admin password. To switch the guard off:
    `NATIVE_GUARD=off` in the config or `touch /data/iliad/guard.off`.
+9. **Optional, public IPv6 on a LAN:** give that network a /64 of the /60 **other than the first**, either by prefix
+   delegation with a prefix ID other than 0 or as a static address. (Tested: the network kept its ULA as its static
+   IPv6 and got `<second /64>::1/64` as an additional subnet, `ipv6_aliases` in the API. The gateway advertises
+   every /64 on the bridge, so clients take both.) Before you do:
+   - UniFi firewall rules set to *IPv4* do not cover IPv6. A network kept off the internet by an IPv4 rule (IoT,
+     say) gets out over IPv6 once it has a public /64: leave such networks without one, or make the rules *Both*.
+   - Every device on the network takes a public address, containers included. UniFi drops new inbound IPv6 by
+     default; prove it with a scan from outside.
+   - Pieces 5 and 6 above apply; `native.sh status` shows both.
 
 **Rollback:** `native.sh uninstall`, put the WAN back as it was in UniFi, move the fibre back to the iliadbox.
 
@@ -115,6 +135,11 @@ the service, run `native.sh install` again.
     `b` (cores 0, 1, 3). The queue is picked by hashing, so re-check after a reboot.
 - **UCG Fiber:** nothing to tune. Qualcomm's ECM/SFE fast path picks up UniFi's tunnel; `tools/fastpath.sh` shows
   its counters and per-core load. Turning GRO off made it worse.
+- **Any gateway: watch for QoS rules.** A QoS rule (here the "Critical Apps Prioritization" UniFi offers) sends all
+  WAN ingress through a software shaper, HTB on an `ifb` device with a burst smaller than one packet, even with
+  Smart Queues off and no rate set. On the 2.5 Gbps line it held downloads at ~1.6 Gb/s, off-peak included, which
+  looks exactly like a line limit; disabling the rule gave 2.0–2.2 Gb/s at once. On the gateway,
+  `tc qdisc show | grep -c htb` should print 0.
 - `tools/speed.sh root@<gateway> [streams] [seconds]` (run on a LAN computer) downloads from Cloudflare while the
   gateway samples per-core load and interface rates.
 
@@ -154,6 +179,10 @@ rules are bypassed for traffic in the tunnel. Use the native path if your firmwa
 - To find who or what changed a WAN setting, UniFi's admin activity log
   (`POST /proxy/network/v2/api/site/default/system-log/admin-activity`) lists old and new values in `updates[]`.
   That is how the iOS app wipe was found.
+- UniFi's IPv6 policy routing does not work on this WAN: the default route learned from Iliad's router
+  advertisements sits in the `main` table, which rule 32000 consults before any VPN rule, so IPv6 marked for a VPN
+  client still leaves through Iliad. Piece 6 sidesteps it for domain routes. A whole-device VPN route on a LAN with
+  public IPv6 would leak over IPv6 the same way.
 
 ## Background
 
@@ -162,7 +191,7 @@ parameters nor a static IPv4 on the DS-Lite tunnel were supported. The feature r
 specification, is on the UniFi community:
 [Generic MAP-E parameters — Iliad Italia, fully specified](https://community.ui.com/questions/FEATURE-REQUEST-Generic-MAP-E-parameters-the-code-already-ships-Iliad-Italia-fully-specified/b34bd953-1295-4459-98eb-056b45e03bf2).
 If UniFi fixes gaps 1–3 (local address from the delegated prefix, an optional address update, and binding to the
-VLAN interface), the helper's job reduces to the iOS-app guard.
+VLAN interface), the helper's job reduces to the iOS-app guard and, with IPv6 on the LAN, pieces 5 and 6.
 
 ## Disclaimer
 
