@@ -10,7 +10,8 @@
 #      points the per-WAN override at a responder on the gateway itself, so the dummy login never leaves the box.
 #   3. Network 11.0.81 binds the udapi tunnel to the WAN's PORT (eth6) even when the WAN is on a VLAN (eth6.836),
 #      where its IPv6 and ubnt-hb46pp live: the parameters get computed but never reach the tunnel, which stays at
-#      ::ffff:192.0.0.2 → any. The helper re-points it at the VLAN interface after every provision.
+#      ::ffff:192.0.0.2 → any. The helper re-points it at the VLAN interface after every provision. IPv4 is down
+#      until it does, so while all is well it looks at the tunnel every second (two `ip` calls), not every 5 s.
 #   4. Guard (needs a UniFi API key): the UniFi iOS app silently turns the WAN back into DHCP when anyone saves it
 #      there. The helper notices that exact state and writes the IPIP settings back through the controller.
 # Two more for a LAN with public IPv6 from the /60 (harmless without one):
@@ -27,6 +28,9 @@ load_conf
 [ -n "${CONF_ERR:-}" ] && die "config: $CONF_ERR"
 
 INTERVAL=${NATIVE_INTERVAL:-5}
+FAST=${NATIVE_FAST:-1}                  # s between cheap checks while IPv4 is up (0 = sleep INTERVAL)
+FAST_WINDOW=${NATIVE_FAST_WINDOW:-30}   # s of FAST-paced passes after a cheap check saw a change
+case "$FAST" in '' | *[!0-9]*) FAST=0 ;; esac
 KICK_AFTER=${NATIVE_KICK_AFTER:-60}     # s without UniFi's tunnel (address, override and responder in place) before a kick
 KICK_EVERY=${NATIVE_KICK_EVERY:-300}    # s between kicks
 RESP_PORT=${NATIVE_RESP_PORT:-4646}
@@ -102,6 +106,45 @@ ensure_binding() {
     for t in $(misbound_tunnels); do
         fix_binding "$t" && say "udapi tunnel $t re-pointed from $WAN_PORT_IF to $WAN_IF" || say "could not re-point udapi tunnel $t"
     done
+}
+
+# Cheap versions of the checks above, for nap: no jq or python, one `ip` call each.
+# Is there a tunnel with the right local towards the Border Relay? (= unifi_tunnel, without the pipeline)
+quick_tunnel() {
+    local line
+    while IFS= read -r line; do
+        case "$line" in *" local $LOCAL_C "*) case "$line" in *"remote $BR_C "*) return 0 ;; esac ;; esac
+    done < <(ip -6 tunnel show 2>/dev/null)
+    return 1
+}
+# The address heading the WAN's global list, as `ip` prints it (a DHCPv6 renewal puts the access /128 back on top).
+wan_head() {
+    local a b _
+    while read -r a b _; do
+        [ "$a" = inet6 ] && { printf '%s\n' "$b"; return 0; }
+    done < <(ip -6 addr show dev "$WAN_IF" scope global 2>/dev/null)
+}
+
+# Sleep until the next pass. While IPv4 is up, check every FAST s whether the tunnel or the WAN's first
+# address changed, and wake as soon as one did: a provision rebuilds the tunnel on the port (gap 3) and IPv4
+# stays down until ensure_binding runs, so this sleep was most of each outage. After a change, passes stay
+# FAST-paced for FAST_WINDOW s, while udapi may still be re-applying. Uses run()'s healthy, head, fast_until.
+nap() {
+    local waited=0
+    if [ "$FAST" -eq 0 ] || [ "$FAST" -ge "$INTERVAL" ]; then
+        sleep "$INTERVAL"
+    elif [ "$healthy" != 1 ]; then
+        if [ "$(now)" -lt "$fast_until" ]; then sleep "$FAST"; else sleep "$INTERVAL"; fi
+    else
+        while [ "$waited" -lt "$INTERVAL" ]; do
+            sleep "$FAST"
+            waited=$((waited + FAST))
+            if ! quick_tunnel || [ "$(wan_head)" != "$head" ]; then
+                fast_until=$(($(now) + FAST_WINDOW))
+                return 0
+            fi
+        done
+    fi
 }
 
 # --- our pieces ----------------------------------------------------------------------------------
@@ -330,10 +373,12 @@ guard_restore() {
 
 run() {
     local note last_note="" t n active=0 waiting=0 last_kick=0 readds="" last_guard=0 restores=""
+    local healthy=0 head="" fast_until=0   # for nap
     trap 'say "stopping"; stop_responder; exit 0' TERM INT
     say "starting: WAN $WAN_IF, address $NATIVE_ADDR, address update → $URL, tunnel local must be $LOCAL_C"
     while :; do
         n=$(now)
+        healthy=0
         if [ ! -d "/sys/class/net/$WAN_IF" ]; then
             note="waiting for $WAN_IF"
         elif ! is_native_wan; then
@@ -371,7 +416,7 @@ run() {
             if v4_ok; then
                 note="IPv4 up: ${t:-a tunnel ip6tnl show does not list with local $LOCAL_C} carries $IP4_TUNNEL"
                 waiting=0
-                [ -n "$t" ] && apply_tuning "$t"
+                [ -n "$t" ] && { apply_tuning "$t"; healthy=1; }
             else
                 [ "$waiting" = 0 ] && waiting=$n
                 if [ -n "$t" ]; then
@@ -392,7 +437,8 @@ run() {
         [ "$note" != "$last_note" ] && say "$note"
         last_note=$note
         printf 'at=%s note=%s\n' "$n" "$note" >"$STATE"
-        sleep "$INTERVAL"
+        [ "$healthy" = 1 ] && head=$(wan_head)
+        nap
     done
 }
 
