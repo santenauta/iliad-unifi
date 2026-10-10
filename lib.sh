@@ -69,6 +69,7 @@ if iid & 0xFFFF:
 hi16 = int(v4) >> 16
 if any(int(h, 16) == hi16 for h in br.exploded.split(":")):
     checks.append(("info", f"Border Relay {br.compressed} carries the IPv4 /16 ({hi16:x}): expect it to change if the IPv4 does"))
+print("NET_C=" + q(net.compressed))
 print("LOCAL_C=" + q(loc.compressed))
 print("BR_C=" + q(br.compressed))
 print("FIRST64=" + q(first64))

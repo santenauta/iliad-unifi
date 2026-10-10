@@ -13,6 +13,12 @@
 #      ::ffff:192.0.0.2 → any. The helper re-points it at the VLAN interface after every provision.
 #   4. Guard (needs a UniFi API key): the UniFi iOS app silently turns the WAN back into DHCP when anyone saves it
 #      there. The helper notices that exact state and writes the IPIP settings back through the controller.
+# Two more for a LAN with public IPv6 from the /60 (harmless without one):
+#   5. Nothing routes the unused part of the /60, so packets to it bounce between the gateway and Iliad until their
+#      hop limit runs out. The helper adds an unreachable route for the /60; the LAN /64s are more specific.
+#   6. UniFi's domain-based Traffic Routes (e.g. a site through a VPN client) only mark IPv4: their IPv6 address
+#      lists fill up but nothing uses them, so dual-stack clients reach those sites over Iliad directly. The helper
+#      refuses IPv6 to them with an immediate reset, and clients fall back to IPv4, which the route does carry.
 # Everything else is UniFi's. `check` and `ui` change nothing.
 #   native.sh check | ui | up | down | kick | status | guard-check | install | uninstall | run
 . "$(dirname "$0")/lib.sh"
@@ -30,6 +36,7 @@ UNIT=/etc/systemd/system/iliad-native.service
 STATE=/run/iliad-native.state
 RESP_PID=/run/iliad-native.resp.pid
 GUARD=INATIVE_RESP
+V6RT=INATIVE_V6RT
 API_KEY_FILE=${NATIVE_API_KEY_FILE:-$KIT_DIR/api.key}   # UniFi API key with write access, root-only; enables the guard
 GUARD_EVERY=${NATIVE_GUARD_EVERY:-30}                   # s between controller checks while the WAN is not IPIP
 GUARD_MAX=${NATIVE_GUARD_MAX:-3}                        # restores per hour before the guard gives up
@@ -131,6 +138,49 @@ ensure_guard() {
 }
 drop_guard() { drop_chain "$IP6T" filter INPUT "$GUARD"; }
 
+# --- LAN IPv6 (pieces 5 and 6) -------------------------------------------------------------------
+
+unreachable_present() { ip -6 route show type unreachable 2>/dev/null | grep -q "^unreachable $NET_C "; }
+ensure_unreachable() {
+    unreachable_present && return 1
+    ip -6 route replace unreachable "$NET_C" 2>/dev/null
+}
+# Domain routes UniFi applies to IPv4 (N of each UBIOS_trafficroute_dn_N that a mangle rule marks for a VPN).
+v4_domain_routes() {
+    iptables -w 10 -t mangle -S 2>/dev/null |
+        sed -n 's/.*--match-set UBIOS_trafficroute_dn_\([0-9][0-9]*\) dst .*-j MARK .*/\1/p' | sort -un
+}
+# The chain as `ip6tables -S` prints it, so a compare tells whether it needs rebuilding.
+v6rt_rules() {
+    local n
+    for n in $(v4_domain_routes); do
+        ipset list -n 2>/dev/null | grep -qx "UBIOS6trafficroute_dn_$n" || continue
+        printf -- '-A %s -p tcp -m set --match-set UBIOS6trafficroute_dn_%s dst -j REJECT --reject-with tcp-reset\n' "$V6RT" "$n"
+        printf -- '-A %s -m set --match-set UBIOS6trafficroute_dn_%s dst -j REJECT --reject-with icmp6-port-unreachable\n' "$V6RT" "$n"
+    done
+}
+ensure_v6_routes() {   # returns 0 when it changed something
+    local want rule
+    [ "${NATIVE_V6_ROUTES:-reject}" = off ] && { drop_chain "$IP6T" filter FORWARD "$V6RT"; return 1; }
+    want=$(v6rt_rules)
+    ensure_chain "$IP6T" filter FORWARD "$V6RT"
+    [ "$want" = "$($IP6T -S "$V6RT" 2>/dev/null | grep '^-A ')" ] && return 1
+    $IP6T -F "$V6RT"
+    # shellcheck disable=SC2086
+    while read -r rule; do [ -n "$rule" ] && $IP6T $rule; done <<<"$want"
+    return 0
+}
+ensure_lan_v6() {
+    ensure_unreachable && say "unreachable route for $NET_C added (unused /64s no longer bounce off Iliad)"
+    ensure_v6_routes && say "IPv6 refused to UniFi's domain Traffic Routes (IPv4 carries them): ${V6RT} = $(v4_domain_routes | tr '\n' ' ')"
+    return 0
+}
+drop_lan_v6() {
+    unreachable_present && ip -6 route del unreachable "$NET_C" 2>/dev/null
+    drop_chain "$IP6T" filter FORWARD "$V6RT"
+    return 0
+}
+
 responder_up() { [ -r "$RESP_PID" ] && kill -0 "$(cat "$RESP_PID")" 2>/dev/null; }
 # 200 "OK" to any GET. Logs the path and the parameter names only (the values are the dummy login).
 # exec: run in the background, the subshell becomes python, so $! is the responder itself.
@@ -211,6 +261,7 @@ up() {   # one-shot: put the three pieces in place (the service does this contin
     ensure_override && info "override written: $OVERRIDE → $URL" || info "override already $URL"
     put_addr && ok "$NATIVE_ADDR/64 on $WAN_IF, first: $(addr_first && echo yes || echo no)"
     ensure_binding
+    ensure_lan_v6
     sleep 1
     responder_answers && ok "responder answers on $URL" || warn "responder does not answer on $URL"
     info "ubnt-hb46pp should now rebuild the tunnel; watch with: $0 status"
@@ -224,8 +275,9 @@ down() {   # down [quiet|keep-override]
     [ "${1:-}" = keep-override ] || rm -f "$OVERRIDE"
     stop_responder
     drop_guard
+    drop_lan_v6
     rm -f "$STATE"
-    [ -z "${1:-}" ] && ok "removed: WAN address, override, responder, guard (UniFi will rebuild from the DHCPv6 address, i.e. no IPv4)"
+    [ -z "${1:-}" ] && ok "removed: WAN address, override, responder, guard, LAN IPv6 pieces (UniFi will rebuild from the DHCPv6 address, i.e. no IPv4)"
     return 0
 }
 
@@ -314,6 +366,7 @@ run() {
                 fi
             fi
             ensure_binding
+            ensure_lan_v6
             t=$(unifi_tunnel)
             if v4_ok; then
                 note="IPv4 up: ${t:-a tunnel ip6tnl show does not list with local $LOCAL_C} carries $IP4_TUNNEL"
@@ -502,6 +555,13 @@ status() {
     local mb
     mb=$(misbound_tunnels)
     [ -z "$mb" ] && ok "no udapi tunnel bound to $WAN_PORT_IF instead of $WAN_IF" || warn "udapi tunnel(s) bound to $WAN_PORT_IF: $mb"
+    unreachable_present && ok "unreachable route for $NET_C" || warn "no unreachable route for $NET_C"
+    local dr
+    dr=$(v4_domain_routes | tr '\n' ' ')
+    if [ "${NATIVE_V6_ROUTES:-reject}" = off ]; then info "IPv6 to domain Traffic Routes not refused (NATIVE_V6_ROUTES=off)"
+    elif [ -z "$dr" ]; then ok "no domain Traffic Routes in use"
+    elif [ "$(v6rt_rules)" = "$($IP6T -S "$V6RT" 2>/dev/null | grep '^-A ')" ]; then ok "IPv6 refused to domain Traffic Routes $dr(clients use IPv4 through the route)"
+    else warn "$V6RT out of date for domain Traffic Routes $dr(the service rebuilds it)"; fi
     pgrep -a -x dpinger 2>/dev/null | grep -F -- "-I $t " | head -2 | cut -c1-160 | sed 's/^/  dpinger: /'
     if guard_on; then ok "guard on (undoes the app's switch to DHCP on VLAN $VLAN; $0 guard-check tests the key)"
     else info "guard off ($([ -s "$API_KEY_FILE" ] || echo "no API key in $API_KEY_FILE")$([ -e "$KIT_DIR/guard.off" ] && echo " guard.off present")$([ "${NATIVE_GUARD:-on}" = off ] && echo " NATIVE_GUARD=off"))"; fi
