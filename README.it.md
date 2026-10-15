@@ -47,7 +47,11 @@ monitoraggio della WAN, failover. Su Iliad però non si alza da solo:
 
 I punti 5 e 6 contano solo quando una LAN ha IPv6 pubblico dal /60, e senza non fanno nulla di dannoso.
 Il resto è tutto di UniFi. Come servizio (`iliad-native`) lo script ricontrolla ogni 5 s e si mette a riposo se la
-WAN non è più di tipo IPIP.
+WAN non è più di tipo IPIP. Il servizio ha un **watchdog** di systemd: se un giro non arriva più in fondo, dopo 60 s
+systemd chiude lo script e lo fa ripartire. È già servito: il 14/10/2026 un bug di bash 5.2 ha bloccato lo script,
+che risultava comunque *active*. Ore dopo un provisioning ha rotto il tunnel e nessuno l'ha riagganciato, così la casa
+è rimasta senza IPv4 fino al mattino. Il bug sta nella process substitution di bash (`< <(…)`), che lo script non usa
+più. Installato prima del watchdog? Rilancia `native.sh install`; `native.sh status` mostra `watchdog: 1min`.
 
 ## Risultati
 

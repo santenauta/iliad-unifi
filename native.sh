@@ -131,6 +131,11 @@ wan_head() {
     done <<<"$out"
 }
 
+# systemd watchdog (WatchdogSec in the unit `install` writes): one ping per pass of run(). If a pass never ends,
+# systemd kills the service and starts it again, instead of IPv4 waiting for someone to notice. Without the
+# unit setting (WATCHDOG_USEC unset, or a one-shot command) it does nothing.
+wd_ping() { [ -n "${WATCHDOG_USEC:-}" ] && systemd-notify WATCHDOG=1 2>/dev/null; return 0; }
+
 # Sleep until the next pass. While IPv4 is up, check every FAST s whether the tunnel or the WAN's first
 # address changed, and wake as soon as one did: a provision rebuilds the tunnel on the port (gap 3) and IPv4
 # stays down until ensure_binding runs, so this sleep was most of each outage. After a change, passes stay
@@ -382,6 +387,7 @@ run() {
     local healthy=0 head="" fast_until=0   # for nap
     trap 'say "stopping"; stop_responder; exit 0' TERM INT
     say "starting: WAN $WAN_IF, address $NATIVE_ADDR, address update → $URL, tunnel local must be $LOCAL_C"
+    [ -n "${WATCHDOG_USEC:-}" ] || say "no systemd watchdog on this unit: run '$0 install' again to add it"
     while :; do
         n=$(now)
         healthy=0
@@ -443,6 +449,7 @@ run() {
         [ "$note" != "$last_note" ] && say "$note"
         last_note=$note
         printf 'at=%s note=%s\n' "$n" "$note" >"$STATE"
+        wd_ping
         [ "$healthy" = 1 ] && head=$(wan_head)
         nap
     done
@@ -462,6 +469,10 @@ Type=simple
 ExecStart=$KIT_DIR/native.sh run
 Restart=always
 RestartSec=10
+# native.sh pings once per pass (every 1-5 s). SIGKILL: a stuck bash does not run its TERM trap.
+WatchdogSec=60
+WatchdogSignal=SIGKILL
+NotifyAccess=all
 
 [Install]
 WantedBy=multi-user.target
@@ -586,7 +597,7 @@ check() {
 
 status() {
     hdr "iliad-native"
-    info "service: $(systemctl is-active iliad-native.service 2>/dev/null), enabled: $(systemctl is-enabled iliad-native.service 2>/dev/null)"
+    info "service: $(systemctl is-active iliad-native.service 2>/dev/null), enabled: $(systemctl is-enabled iliad-native.service 2>/dev/null), watchdog: $(systemctl show -p WatchdogUSec --value iliad-native.service 2>/dev/null)"
     [ -r "$STATE" ] && info "$(cat "$STATE")"
     addr_present && { addr_first && ok "$NATIVE_ADDR first on $WAN_IF" || warn "$NATIVE_ADDR on $WAN_IF but not first"; } ||
         warn "$NATIVE_ADDR not on $WAN_IF"
