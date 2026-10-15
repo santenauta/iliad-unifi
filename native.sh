@@ -109,20 +109,26 @@ ensure_binding() {
 }
 
 # Cheap versions of the checks above, for nap: no jq or python, one `ip` call each.
+# No process substitution (`< <(…)`) anywhere in this script: bash 5.2 forgets one whose command exits before
+# it files the child (restore_pipeline() unblocks SIGCHLD before procsub_add()), keeps it as running, and once
+# the PID comes round again (every ~32 h on a UCG Fiber) the next command given that PID is waited for forever.
+# That froze the service on 2026-10-14; a capture into a variable is waited for like any other command.
 # Is there a tunnel with the right local towards the Border Relay? (= unifi_tunnel, without the pipeline)
 quick_tunnel() {
-    local line
+    local line out
+    out=$(ip -6 tunnel show 2>/dev/null)
     while IFS= read -r line; do
         case "$line" in *" local $LOCAL_C "*) case "$line" in *"remote $BR_C "*) return 0 ;; esac ;; esac
-    done < <(ip -6 tunnel show 2>/dev/null)
+    done <<<"$out"
     return 1
 }
 # The address heading the WAN's global list, as `ip` prints it (a DHCPv6 renewal puts the access /128 back on top).
 wan_head() {
-    local a b _
+    local a b _ out
+    out=$(ip -6 addr show dev "$WAN_IF" scope global 2>/dev/null)
     while read -r a b _; do
         [ "$a" = inet6 ] && { printf '%s\n' "$b"; return 0; }
-    done < <(ip -6 addr show dev "$WAN_IF" scope global 2>/dev/null)
+    done <<<"$out"
 }
 
 # Sleep until the next pass. While IPv4 is up, check every FAST s whether the tunnel or the WAN's first
