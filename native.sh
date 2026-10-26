@@ -109,21 +109,32 @@ ensure_binding() {
 }
 
 # Cheap versions of the checks above, for nap: no jq or python, one `ip` call each.
+# No process substitution (`< <(…)`) anywhere in this script: bash 5.2 forgets one whose command exits before
+# it files the child (restore_pipeline() unblocks SIGCHLD before procsub_add()), keeps it as running, and once
+# the PID comes round again (every ~32 h on a UCG Fiber) the next command given that PID is waited for forever.
+# That froze the service on 2026-10-14; a capture into a variable is waited for like any other command.
 # Is there a tunnel with the right local towards the Border Relay? (= unifi_tunnel, without the pipeline)
 quick_tunnel() {
-    local line
+    local line out
+    out=$(ip -6 tunnel show 2>/dev/null)
     while IFS= read -r line; do
         case "$line" in *" local $LOCAL_C "*) case "$line" in *"remote $BR_C "*) return 0 ;; esac ;; esac
-    done < <(ip -6 tunnel show 2>/dev/null)
+    done <<<"$out"
     return 1
 }
 # The address heading the WAN's global list, as `ip` prints it (a DHCPv6 renewal puts the access /128 back on top).
 wan_head() {
-    local a b _
+    local a b _ out
+    out=$(ip -6 addr show dev "$WAN_IF" scope global 2>/dev/null)
     while read -r a b _; do
         [ "$a" = inet6 ] && { printf '%s\n' "$b"; return 0; }
-    done < <(ip -6 addr show dev "$WAN_IF" scope global 2>/dev/null)
+    done <<<"$out"
 }
+
+# systemd watchdog (WatchdogSec in the unit `install` writes): one ping per pass of run(). If a pass never ends,
+# systemd kills the service and starts it again, instead of IPv4 waiting for someone to notice. Without the
+# unit setting (WATCHDOG_USEC unset, or a one-shot command) it does nothing.
+wd_ping() { [ -n "${WATCHDOG_USEC:-}" ] && systemd-notify WATCHDOG=1 2>/dev/null; return 0; }
 
 # Sleep until the next pass. While IPv4 is up, check every FAST s whether the tunnel or the WAN's first
 # address changed, and wake as soon as one did: a provision rebuilds the tunnel on the port (gap 3) and IPv4
@@ -376,6 +387,7 @@ run() {
     local healthy=0 head="" fast_until=0   # for nap
     trap 'say "stopping"; stop_responder; exit 0' TERM INT
     say "starting: WAN $WAN_IF, address $NATIVE_ADDR, address update → $URL, tunnel local must be $LOCAL_C"
+    [ -n "${WATCHDOG_USEC:-}" ] || say "no systemd watchdog on this unit: run '$0 install' again to add it"
     while :; do
         n=$(now)
         healthy=0
@@ -437,6 +449,7 @@ run() {
         [ "$note" != "$last_note" ] && say "$note"
         last_note=$note
         printf 'at=%s note=%s\n' "$n" "$note" >"$STATE"
+        wd_ping
         [ "$healthy" = 1 ] && head=$(wan_head)
         nap
     done
@@ -456,6 +469,10 @@ Type=simple
 ExecStart=$KIT_DIR/native.sh run
 Restart=always
 RestartSec=10
+# native.sh pings once per pass (every 1-5 s). SIGKILL: a stuck bash does not run its TERM trap.
+WatchdogSec=60
+WatchdogSignal=SIGKILL
+NotifyAccess=all
 
 [Install]
 WantedBy=multi-user.target
@@ -580,7 +597,7 @@ check() {
 
 status() {
     hdr "iliad-native"
-    info "service: $(systemctl is-active iliad-native.service 2>/dev/null), enabled: $(systemctl is-enabled iliad-native.service 2>/dev/null)"
+    info "service: $(systemctl is-active iliad-native.service 2>/dev/null), enabled: $(systemctl is-enabled iliad-native.service 2>/dev/null), watchdog: $(systemctl show -p WatchdogUSec --value iliad-native.service 2>/dev/null)"
     [ -r "$STATE" ] && info "$(cat "$STATE")"
     addr_present && { addr_first && ok "$NATIVE_ADDR first on $WAN_IF" || warn "$NATIVE_ADDR on $WAN_IF but not first"; } ||
         warn "$NATIVE_ADDR not on $WAN_IF"

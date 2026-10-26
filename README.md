@@ -43,7 +43,11 @@ health, failover. On Iliad it still does not come up on its own:
 
 Pieces 5 and 6 matter only once a LAN has public IPv6 from the /60, and do nothing harmful without one.
 Everything else is UniFi's own. As a service (`iliad-native`) the helper re-checks every 5 s and goes idle if the
-WAN is no longer an IPIP WAN.
+WAN is no longer an IPIP WAN. The service has a systemd **watchdog**: if a pass ever stops finishing, systemd kills
+the helper after 60 s and starts it again. That once mattered: on 2026-10-14 a bash 5.2 bug froze the helper while
+it still showed as *active*. Hours later a provision broke the tunnel and nothing re-pointed it, so the house had no IPv4 until
+morning. The bug is in bash's process substitution (`< <(…)`), which the helper no longer uses. Installed before
+the watchdog? Run `native.sh install` again; `native.sh status` shows `watchdog: 1min`.
 
 ## Results
 
