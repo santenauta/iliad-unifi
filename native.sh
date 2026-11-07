@@ -355,8 +355,11 @@ kick() { addr_present || die "$NATIVE_ADDR is not on $WAN_IF (run: $0 up)"; kick
 
 guard_on() { [ "${NATIVE_GUARD:-on}" != off ] && [ ! -e "$KIT_DIR/guard.off" ] && [ -s "$API_KEY_FILE" ]; }
 api() {   # api METHOD PATH [JSON-FILE] — the key goes in a header file, never on the command line
-    curl -sk -m 15 -X "$1" -H @<(printf 'X-API-KEY: %s\n' "$(tr -d '\n' <"$API_KEY_FILE")") \
-        -H 'Content-Type: application/json' ${3:+--data @"$3"} "$API$2"
+    local key
+    key=$(tr -d '\n' <"$API_KEY_FILE")
+    key=${key//\\/\\\\} key=${key//\"/\\\"}   # curl config quoting; a here-string, not process substitution (see quick_tunnel)
+    curl -sk -m 15 -X "$1" -K - -H 'Content-Type: application/json' ${3:+--data @"$3"} "$API$2" \
+        <<<"header = \"X-API-KEY: $key\""
 }
 # The wiped WAN: on our VLAN, IPv4 = dhcp, no Border Relay. Prints its object (one line) or nothing.
 wiped_wan() {
