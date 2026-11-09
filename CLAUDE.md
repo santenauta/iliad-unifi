@@ -32,7 +32,7 @@ Run these from the repo root. There are no tests and no CI.
   a UTF-8 locale shellcheck chokes on the `→` characters. Run `lib.sh` only through `-x`, never on its own.
 - `ILIAD_CONF=iliad.conf.example ./native.sh ui`: prints the UniFi fields with Interface ID `::c000:22b:0`
   and tunnel local `2001:db8:1234:5670:0:c000:22b:0`, exit 0. It needs `python3` and no root.
-- `grep -nE '^[^#]*<\(' native.sh`: should print nothing. Today it prints line 358 (`api()`), a known bug.
+- `grep -nE '^[^#]*<\(' native.sh`: prints nothing.
 - Everything else (`preflight`, `check`, `status`, `up`, `install`, the guard) only runs on a real UniFi
   gateway. Say what you could not test.
 
